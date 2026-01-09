@@ -1,4 +1,5 @@
 # Swift Impact Analysis MCP Server
+<img width="2796" height="2330" alt="image" src="https://github.com/user-attachments/assets/39b74732-3080-4c56-8093-b4fdd4eb77ab" />
 
 A lightweight MCP server for analyzing Swift/iOS codebases using SourceKitten AST parsing.
 
