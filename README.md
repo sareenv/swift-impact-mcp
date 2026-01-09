@@ -117,6 +117,27 @@ mcp-impact-analysis/
 
 > **Note:** Mixed Swift/Objective-C projects will only have their Swift code analyzed. Objective-C classes, categories, and protocols will not appear in the AST.
 
+## Credits
+
+This project relies on [**SourceKitten**](https://github.com/jpsim/SourceKitten) by [JP Simard](https://github.com/jpsim) — a Swift tool that interfaces with Apple's SourceKit framework to provide accurate AST parsing. SourceKitten powers tools like [SwiftLint](https://github.com/realm/SwiftLint) and [Jazzy](https://github.com/realm/jazzy).
+
+```bash
+brew install sourcekitten
+```
+
+## Disclaimer
+
+⚠️ **USE AT YOUR OWN RISK**
+
+This software is provided **"as is"**, without warranty of any kind, express or implied.
+
+- ✅ Free to use for **commercial and personal purposes**
+- ❌ **No guarantees** of functionality, accuracy, or fitness for any purpose
+- ❌ **No support or maintenance** promised — you are responsible for your own maintenance overhead
+- ❌ **No liability** for any damages or issues arising from use
+
+By using this tool, you accept full responsibility for any outcomes.
+
 ## License
 
 MIT
