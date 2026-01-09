@@ -14,15 +14,23 @@ brew install sourcekitten
 npm start
 ```
 
-### Configure MCP Client
+### Configure for VS Code
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Create a `.vscode` directory in your project root and add an `mcp.json` file:
+
+```bash
+mkdir .vscode
+```
+
+**VS Code** (`.vscode/mcp.json`):
 ```json
 {
-  "mcpServers": {
-    "swift-impact": {
+  "servers": {
+    "swift-impact-analyzer": {
+      "type": "stdio",
       "command": "node",
-      "args": ["/path/to/mcp-impact-analysis/mcp-server.js"]
+      "args": ["mcp-server.js"],
+      "cwd": "${workspaceFolder}"
     }
   }
 }
