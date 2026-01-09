@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "swift-impact-analyzer": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["mcp-server.js"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
