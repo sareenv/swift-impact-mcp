@@ -93,7 +93,7 @@ The tool automatically detects and analyzes both Swift and Objective-C files in 
 
 ### Known Issues
 
-- **Clang crashes**: Some Objective-C protocol declarations may cause Clang 18.1.3 to crash during JSON AST generation. These files are gracefully skipped and counted as errors in the output.
+- **Clang crashes**: Some Objective-C protocol declarations may cause Clang v18.1.3 to crash during JSON AST generation. These files are gracefully skipped and counted as errors in the output.
 - **Foundation headers**: On non-macOS systems, Objective-C files that import Foundation headers may fail to parse if the headers are not available.
 
 ## Files

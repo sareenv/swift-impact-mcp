@@ -15,7 +15,7 @@ const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyn
 
 // Helper to safely calculate length from Clang AST range
 function calculateRangeLength(range) {
-  if (!range?.begin?.offset || !range?.end?.offset) {
+  if (range?.begin?.offset == null || range?.end?.offset == null) {
     return undefined;
   }
   return range.end.offset - range.begin.offset;
@@ -201,8 +201,8 @@ function extractObjCSymbols(ast, filePath) {
         length: calculateRangeLength(node.range),
       };
       
-      // Extract superclass
-      // Note: CLANG_NULL_POINTER is Clang's JSON AST representation for no superclass
+      // Extract superclass (if present)
+      // Note: Clang uses '0x0' to indicate a null pointer, meaning no superclass exists
       if (node.super && node.super.id !== CLANG_NULL_POINTER) {
         const superName = node.super.name;
         if (superName) {
@@ -428,7 +428,7 @@ Aborting analysis.` }] };
       
       // Check sourcekitten
       try {
-        await execAsync('which sourcekitten');
+        await execWithFile('which', ['sourcekitten']);
       } catch {
         return { content: [{ type: "text", text: `❌ SourceKitten not found. Install: brew install sourcekitten` }] };
       }
@@ -436,7 +436,7 @@ Aborting analysis.` }] };
       // Check clang
       let clangAvailable = true;
       try {
-        await execAsync('which clang');
+        await execWithFile('which', ['clang']);
       } catch {
         clangAvailable = false;
       }
