@@ -140,6 +140,15 @@ function getRelativePath(fullPath) {
   return repoPath ? fullPath.replace(repoPath + '/', '') : fullPath;
 }
 
+// Helper to get plural form of symbol kind
+const kindToPlural = {
+  'class': 'classes',
+  'struct': 'structs',
+  'protocol': 'protocols',
+  'enum': 'enums',
+  'function': 'functions'
+};
+
 function findSymbol(symbolName) {
   if (!astData) return null;
   
@@ -150,7 +159,8 @@ function findSymbol(symbolName) {
     const fullPath = path.join(repoPath, match.file);
     const fileData = astData.files?.[fullPath];
     if (fileData) {
-      const symbolList = fileData.symbols?.[`${match.kind}s`] || fileData.symbols?.[match.kind];
+      const pluralKind = kindToPlural[match.kind] || `${match.kind}s`;
+      const symbolList = fileData.symbols?.[pluralKind];
       if (symbolList) {
         const symbol = symbolList.find(s => s.name === symbolName);
         if (symbol) {
