@@ -15,7 +15,9 @@ const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyn
 
 // Helper to safely calculate length from Clang AST range
 function calculateRangeLength(range) {
-  if (range?.begin?.offset == null || range?.end?.offset == null) {
+  // Check for null/undefined, but allow 0 as a valid offset
+  if (range?.begin?.offset === null || range?.begin?.offset === undefined ||
+      range?.end?.offset === null || range?.end?.offset === undefined) {
     return undefined;
   }
   return range.end.offset - range.begin.offset;
@@ -230,7 +232,9 @@ function extractObjCSymbols(ast, filePath) {
             returnType: child.returnType?.qualType,
             access: info.accessibility,
           };
-          if (child.name.startsWith('init')) {
+          // Objective-C initializers are methods that start with 'init' (init, initWith..., etc.)
+          // but only if they return 'instancetype' or the class type (id in parsed form)
+          if (child.name === 'init' || child.name.startsWith('initWith')) {
             members.initializers.push(methodInfo);
           } else {
             members.methods.push(methodInfo);
@@ -291,7 +295,14 @@ function extractObjCSymbols(ast, filePath) {
     
     // Handle Objective-C categories
     if (kind === 'ObjCCategoryDecl' && name && !node.isImplicit) {
-      const categoryName = node.interface?.name ? `${node.interface.name}(${name})` : name;
+      // Categories should always have an interface, but handle gracefully if missing
+      const interfaceName = node.interface?.name;
+      if (!interfaceName) {
+        // Skip categories without a valid interface as they're malformed
+        return;
+      }
+      
+      const categoryName = `${interfaceName}(${name})`;
       const info = {
         name: categoryName,
         kind: 'source.lang.objc.decl.extension',
@@ -300,7 +311,7 @@ function extractObjCSymbols(ast, filePath) {
         accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
         offset: node.loc?.offset,
         length: calculateRangeLength(node.range),
-        extendedType: node.interface?.name,
+        extendedType: interfaceName,
       };
       
       // Extract protocols adopted by category
