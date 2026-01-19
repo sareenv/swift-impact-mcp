@@ -9,10 +9,14 @@ import { spawn } from "child_process";
 
 const execAsync = promisify(exec);
 
+// Constants for Clang AST generation
+const CLANG_NULL_POINTER = '0x0';  // Clang's JSON AST representation for null pointer
+const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics'];
+
 // Helper to safely execute commands with file paths
 async function execWithFile(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     
@@ -20,11 +24,15 @@ async function execWithFile(command, args) {
       stdout += data.toString();
     });
     
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
     child.on('close', (code) => {
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`Command failed with code ${code}`));
+        reject(new Error(`Command failed with code ${code}: ${stderr}`));
       }
     });
     
@@ -186,8 +194,8 @@ function extractObjCSymbols(ast, filePath) {
       };
       
       // Extract superclass
-      // Note: '0x0' is Clang's JSON AST representation for a null pointer (no superclass)
-      if (node.super && node.super.id !== '0x0') {
+      // Note: CLANG_NULL_POINTER is Clang's JSON AST representation for no superclass
+      if (node.super && node.super.id !== CLANG_NULL_POINTER) {
         const superName = node.super.name;
         if (superName) {
           info.inheritedTypes.push(superName);
@@ -462,7 +470,7 @@ Aborting analysis.` }] };
         for (const file of sourceFiles.objc) {
           try {
             // Use clang to generate AST, use -x objective-c to force Objective-C mode
-            const { stdout } = await execWithFile('clang', ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics', file]);
+            const { stdout } = await execWithFile('clang', [...CLANG_AST_ARGS, file]);
             const ast = JSON.parse(stdout);
             const { symbols, memberData } = extractObjCSymbols(ast, file);
             files[file] = { symbols, memberData, language: 'objc' };
