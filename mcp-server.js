@@ -147,9 +147,9 @@ function findSymbol(symbolName) {
   const indexMatches = astData.indexes?.byName?.[symbolName];
   if (indexMatches && indexMatches.length > 0) {
     const match = indexMatches[0];
-    const fullPath = Object.keys(astData.files).find(f => getRelativePath(f) === match.file);
-    if (fullPath) {
-      const fileData = astData.files[fullPath];
+    const fullPath = path.join(repoPath, match.file);
+    const fileData = astData.files?.[fullPath];
+    if (fileData) {
       const symbolList = fileData.symbols?.[`${match.kind}s`] || fileData.symbols?.[match.kind];
       if (symbolList) {
         const symbol = symbolList.find(s => s.name === symbolName);
@@ -417,6 +417,16 @@ server.registerTool(
     
     const extensions = [];
     const referencedIn = [];
+    
+    // Quick check: files that contain a symbol with this exact name (using index)
+    const filesWithSymbol = new Set();
+    const symbolLocations = astData.indexes?.byName?.[symbolName] || [];
+    for (const loc of symbolLocations) {
+      if (loc.file !== symbol.file) {
+        filesWithSymbol.add(loc.file);
+      }
+    }
+    
     for (const [filePath, fd] of Object.entries(astData.files || {})) {
       const rel = getRelativePath(filePath);
       if (rel === symbol.file) continue;
@@ -428,17 +438,17 @@ server.registerTool(
         }
       }
       
-      // References (search in symbol names and type names only, no AST traversal)
-      const containsSymbol = 
+      // References: Check if file uses this symbol (as type or inheritance)
+      const usesSymbol = 
+        filesWithSymbol.has(rel) ||  // Has a symbol with exact same name (from index)
         Object.values(fd.symbols || {}).some(symbolList => 
           symbolList.some(s => 
-            s.name === symbolName || 
             s.typeName === symbolName ||
             s.inheritedTypes?.includes(symbolName)
           )
         );
 
-      if (containsSymbol) referencedIn.push(rel);
+      if (usesSymbol) referencedIn.push(rel);
     }
     
     // Build response
