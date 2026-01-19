@@ -432,8 +432,8 @@ server.registerTool(
       const containsSymbol = 
         Object.values(fd.symbols || {}).some(symbolList => 
           symbolList.some(s => 
-            s.name?.includes(symbolName) || 
-            s.typeName?.includes(symbolName) ||
+            s.name === symbolName || 
+            s.typeName === symbolName ||
             s.inheritedTypes?.includes(symbolName)
           )
         );
