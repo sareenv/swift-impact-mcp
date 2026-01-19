@@ -14,7 +14,7 @@ let repoPath = null;
 
 const server = new McpServer({
   name: "swift-impact-analyzer",
-  version: "2.0.0",
+  version: "3.0.0",
 });
 
 // ============== HELPERS ==============
@@ -77,31 +77,103 @@ function extractSymbols(ast, filePath) {
   return symbols;
 }
 
+function extractMemberData(ast, symbols) {
+  const memberData = {};
+  
+  function findAndExtractMembers(node, symbolName) {
+    if (!node) return null;
+    const kind = node['key.kind'];
+    const name = node['key.name'];
+    
+    // Check if this node matches any of our symbols
+    if (kind && name && symbolName === name) {
+      const members = { properties: [], methods: [], initializers: [] };
+      
+      for (const m of node['key.substructure'] || []) {
+        const memberKind = m['key.kind'] || '';
+        const memberName = m['key.name'] || '';
+        const type = m['key.typename'];
+        const access = m['key.accessibility']?.replace('source.lang.swift.accessibility.', '');
+        
+        if (memberKind.includes('function') || memberKind.includes('method')) {
+          if (memberName.startsWith('init')) {
+            members.initializers.push({ name: memberName, access });
+          } else {
+            members.methods.push({ name: memberName, returnType: type, access });
+          }
+        } else if (memberKind.includes('var')) {
+          members.properties.push({ name: memberName, type, access });
+        }
+      }
+      
+      return members;
+    }
+    
+    // Recursively search children
+    for (const child of node['key.substructure'] || []) {
+      const result = findAndExtractMembers(child, symbolName);
+      if (result) return result;
+    }
+    
+    return null;
+  }
+  
+  // Extract members for all symbols
+  const allSymbols = [
+    ...symbols.classes,
+    ...symbols.structs,
+    ...symbols.protocols,
+    ...symbols.enums
+  ];
+  
+  for (const symbol of allSymbols) {
+    const members = findAndExtractMembers(ast, symbol.name);
+    if (members) {
+      memberData[symbol.name] = members;
+    }
+  }
+  
+  return memberData;
+}
+
 function getRelativePath(fullPath) {
   return repoPath ? fullPath.replace(repoPath + '/', '') : fullPath;
 }
 
+// Helper to get plural form of symbol kind
+const kindToPlural = {
+  'class': 'classes',
+  'struct': 'structs',
+  'protocol': 'protocols',
+  'enum': 'enums',
+  'function': 'functions'
+};
+
 function findSymbol(symbolName) {
   if (!astData) return null;
   
-  // Check type map first
+  // Use index for O(1) lookup instead of O(n) search
+  const indexMatches = astData.indexes?.byName?.[symbolName];
+  if (indexMatches && indexMatches.length > 0) {
+    const match = indexMatches[0];
+    const fullPath = path.join(repoPath, match.file);
+    const fileData = astData.files?.[fullPath];
+    if (fileData) {
+      const pluralKind = kindToPlural[match.kind] || `${match.kind}s`;
+      const symbolList = fileData.symbols?.[pluralKind];
+      if (symbolList) {
+        const symbol = symbolList.find(s => s.name === symbolName);
+        if (symbol) {
+          return { ...symbol, file: match.file, symbolKind: match.kind };
+        }
+      }
+    }
+  }
+  
+  // Fallback to type map
   const typeInfo = astData.dependencyGraph?.typeMap?.[symbolName];
   if (typeInfo) {
     return { ...typeInfo.symbol, file: typeInfo.file, symbolKind: typeInfo.kind };
-  }
-  
-  // Search all files
-  for (const [filePath, fileData] of Object.entries(astData.files || {})) {
-    const allSymbols = [
-      ...(fileData.symbols?.classes || []).map(s => ({ ...s, symbolKind: 'class' })),
-      ...(fileData.symbols?.structs || []).map(s => ({ ...s, symbolKind: 'struct' })),
-      ...(fileData.symbols?.protocols || []).map(s => ({ ...s, symbolKind: 'protocol' })),
-      ...(fileData.symbols?.enums || []).map(s => ({ ...s, symbolKind: 'enum' })),
-      ...(fileData.symbols?.functions || []).map(s => ({ ...s, symbolKind: 'function' })),
-    ];
-    
-    const match = allSymbols.find(s => s.name === symbolName);
-    if (match) return { ...match, file: getRelativePath(filePath) };
   }
   
   return null;
@@ -193,7 +265,9 @@ Aborting analysis.` }] };
         try {
           const { stdout } = await execAsync(`sourcekitten structure --file "${file}"`);
           const ast = JSON.parse(stdout);
-          files[file] = { ast, symbols: extractSymbols(ast, file) };
+          const symbols = extractSymbols(ast, file);
+          const memberData = extractMemberData(ast, symbols);
+          files[file] = { symbols, memberData };
           processed++;
         } catch {
           errors++;
@@ -224,11 +298,46 @@ Aborting analysis.` }] };
         }
       }
       
+      // Build search indexes for faster queries
+      const indexes = {
+        byName: {},      // symbolName -> [{ file, kind }]
+        byKind: {},      // 'class' -> [symbolNames]
+        byFile: {}       // filePath -> [symbolNames]
+      };
+
+      for (const [filePath, fileData] of Object.entries(files)) {
+        const rel = getRelativePath(filePath);
+        indexes.byFile[rel] = [];
+        
+        const processSymbols = (symbols, kind) => {
+          if (!indexes.byKind[kind]) indexes.byKind[kind] = [];
+          
+          for (const symbol of symbols) {
+            // Index by name
+            if (!indexes.byName[symbol.name]) indexes.byName[symbol.name] = [];
+            indexes.byName[symbol.name].push({ file: rel, kind });
+            
+            // Index by kind
+            indexes.byKind[kind].push(symbol.name);
+            
+            // Index by file
+            indexes.byFile[rel].push(symbol.name);
+          }
+        };
+        
+        processSymbols(fileData.symbols.classes, 'class');
+        processSymbols(fileData.symbols.structs, 'struct');
+        processSymbols(fileData.symbols.protocols, 'protocol');
+        processSymbols(fileData.symbols.enums, 'enum');
+        processSymbols(fileData.symbols.functions, 'function');
+      }
+      
       astData = {
         repoPath,
         generatedAt: new Date().toISOString(),
         files,
         dependencyGraph: { typeMap, edges },
+        indexes
       };
       
       // Save
@@ -306,42 +415,10 @@ server.registerTool(
       return { content: [{ type: "text", text: `❌ Symbol "${symbolName}" not found.` }] };
     }
     
-    // Find raw AST for members
-    let rawAst = null;
+    // Get pre-extracted members
     const fullPath = path.join(repoPath, symbol.file);
     const fileData = astData.files?.[fullPath];
-    if (fileData?.ast) {
-      const findNode = (node) => {
-        if (node?.['key.name'] === symbolName) return node;
-        for (const child of node?.['key.substructure'] || []) {
-          const found = findNode(child);
-          if (found) return found;
-        }
-        return null;
-      };
-      rawAst = findNode(fileData.ast);
-    }
-    
-    // Extract members
-    const members = { properties: [], methods: [], initializers: [] };
-    if (rawAst?.['key.substructure']) {
-      for (const m of rawAst['key.substructure']) {
-        const kind = m['key.kind'] || '';
-        const name = m['key.name'] || '';
-        const type = m['key.typename'];
-        const access = m['key.accessibility']?.replace('source.lang.swift.accessibility.', '');
-        
-        if (kind.includes('function') || kind.includes('method')) {
-          if (name.startsWith('init')) {
-            members.initializers.push({ name, access });
-          } else {
-            members.methods.push({ name, returnType: type, access });
-          }
-        } else if (kind.includes('var')) {
-          members.properties.push({ name, type, access });
-        }
-      }
-    }
+    const members = fileData?.memberData?.[symbolName] || { properties: [], methods: [], initializers: [] };
     
     // Find usages
     const inheritedBy = (astData.dependencyGraph?.edges || [])
@@ -350,6 +427,16 @@ server.registerTool(
     
     const extensions = [];
     const referencedIn = [];
+    
+    // Quick check: files that contain a symbol with this exact name (using index)
+    const filesWithSymbol = new Set();
+    const symbolLocations = astData.indexes?.byName?.[symbolName] || [];
+    for (const loc of symbolLocations) {
+      if (loc.file !== symbol.file) {
+        filesWithSymbol.add(loc.file);
+      }
+    }
+    
     for (const [filePath, fd] of Object.entries(astData.files || {})) {
       const rel = getRelativePath(filePath);
       if (rel === symbol.file) continue;
@@ -361,16 +448,17 @@ server.registerTool(
         }
       }
       
-      // References (simple name search in AST)
-      const searchAst = (node) => {
-        if ((node?.['key.name'] || '').includes(symbolName)) return true;
-        if ((node?.['key.typename'] || '').includes(symbolName)) return true;
-        for (const child of node?.['key.substructure'] || []) {
-          if (searchAst(child)) return true;
-        }
-        return false;
-      };
-      if (searchAst(fd.ast)) referencedIn.push(rel);
+      // References: Check if file uses this symbol (as type or inheritance)
+      const usesSymbol = 
+        filesWithSymbol.has(rel) ||  // Has a symbol with exact same name (from index)
+        Object.values(fd.symbols || {}).some(symbolList => 
+          symbolList.some(s => 
+            s.typeName === symbolName ||
+            s.inheritedTypes?.includes(symbolName)
+          )
+        );
+
+      if (usesSymbol) referencedIn.push(rel);
     }
     
     // Build response
