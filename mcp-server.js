@@ -5,8 +5,32 @@ import fs from "fs/promises";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { spawn } from "child_process";
 
 const execAsync = promisify(exec);
+
+// Helper to safely execute commands with file paths
+async function execWithFile(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    let stderr = '';
+    
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Command failed with code ${code}`));
+      }
+    });
+    
+    child.on('error', reject);
+  });
+}
 
 // State - just the loaded AST data
 let astData = null;
@@ -162,6 +186,7 @@ function extractObjCSymbols(ast, filePath) {
       };
       
       // Extract superclass
+      // Note: '0x0' is Clang's JSON AST representation for a null pointer (no superclass)
       if (node.super && node.super.id !== '0x0') {
         const superName = node.super.name;
         if (superName) {
@@ -421,7 +446,7 @@ Aborting analysis.` }] };
       // Process Swift files
       for (const file of sourceFiles.swift) {
         try {
-          const { stdout } = await execAsync(`sourcekitten structure --file "${file}"`);
+          const { stdout } = await execWithFile('sourcekitten', ['structure', '--file', file]);
           const ast = JSON.parse(stdout);
           const symbols = extractSymbols(ast, file);
           const memberData = extractMemberData(ast, symbols);
@@ -436,8 +461,8 @@ Aborting analysis.` }] };
       if (clangAvailable && sourceFiles.objc.length > 0) {
         for (const file of sourceFiles.objc) {
           try {
-            // Use clang to generate AST, suppress warnings to stderr, use -x objective-c to force Objective-C mode
-            const { stdout } = await execAsync(`clang -x objective-c -Xclang -ast-dump=json -fsyntax-only -fno-color-diagnostics "${file}" 2>/dev/null`);
+            // Use clang to generate AST, use -x objective-c to force Objective-C mode
+            const { stdout } = await execWithFile('clang', ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics', file]);
             const ast = JSON.parse(stdout);
             const { symbols, memberData } = extractObjCSymbols(ast, file);
             files[file] = { symbols, memberData, language: 'objc' };
