@@ -5,8 +5,50 @@ import fs from "fs/promises";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { spawn } from "child_process";
 
 const execAsync = promisify(exec);
+
+// Constants for Clang AST generation
+const CLANG_NULL_POINTER = '0x0';  // Clang's JSON AST representation for null pointer
+const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics'];
+
+// Helper to safely calculate length from Clang AST range
+function calculateRangeLength(range) {
+  // Check for null/undefined, but allow 0 as a valid offset
+  if (range?.begin?.offset === null || range?.begin?.offset === undefined ||
+      range?.end?.offset === null || range?.end?.offset === undefined) {
+    return undefined;
+  }
+  return range.end.offset - range.begin.offset;
+}
+
+// Helper to safely execute commands with file paths
+async function execWithFile(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Command failed with code ${code}: ${stderr}`));
+      }
+    });
+    
+    child.on('error', reject);
+  });
+}
 
 // State - just the loaded AST data
 let astData = null;
@@ -19,8 +61,8 @@ const server = new McpServer({
 
 // ============== HELPERS ==============
 
-async function findSwiftFiles(dir) {
-  const swiftFiles = [];
+async function findSourceFiles(dir) {
+  const sourceFiles = { swift: [], objc: [] };
   const skip = ['Pods', '.build', 'build', 'DerivedData', '.git', 'Carthage', 'node_modules'];
   
   async function scan(currentDir) {
@@ -29,14 +71,18 @@ async function findSwiftFiles(dir) {
       const fullPath = path.join(currentDir, entry.name);
       if (entry.isDirectory() && !skip.includes(entry.name)) {
         await scan(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith('.swift')) {
-        swiftFiles.push(fullPath);
+      } else if (entry.isFile()) {
+        if (entry.name.endsWith('.swift')) {
+          sourceFiles.swift.push(fullPath);
+        } else if (entry.name.endsWith('.m') || entry.name.endsWith('.h')) {
+          sourceFiles.objc.push(fullPath);
+        }
       }
     }
   }
   
   await scan(dir);
-  return swiftFiles;
+  return sourceFiles;
 }
 
 function extractSymbols(ast, filePath) {
@@ -136,6 +182,160 @@ function extractMemberData(ast, symbols) {
   return memberData;
 }
 
+function extractObjCSymbols(ast, filePath) {
+  const symbols = { classes: [], structs: [], protocols: [], functions: [], enums: [], extensions: [], variables: [] };
+  const memberData = {};
+  
+  function walk(node) {
+    if (!node) return;
+    const kind = node.kind;
+    const name = node.name;
+    
+    // Handle Objective-C classes
+    if (kind === 'ObjCInterfaceDecl' && name && !node.isImplicit) {
+      const info = {
+        name,
+        kind: 'source.lang.objc.decl.class',
+        file: filePath,
+        inheritedTypes: [],
+        accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
+        offset: node.loc?.offset,
+        length: calculateRangeLength(node.range),
+      };
+      
+      // Extract superclass (if present)
+      // Note: Clang uses '0x0' to indicate a null pointer, meaning no superclass exists
+      if (node.super && node.super.id !== CLANG_NULL_POINTER) {
+        const superName = node.super.name;
+        if (superName) {
+          info.inheritedTypes.push(superName);
+        }
+      }
+      
+      // Extract protocols
+      if (node.protocols) {
+        for (const protocol of node.protocols) {
+          if (protocol.name) {
+            info.inheritedTypes.push(protocol.name);
+          }
+        }
+      }
+      
+      symbols.classes.push(info);
+      
+      // Extract members
+      const members = { properties: [], methods: [], initializers: [] };
+      for (const child of node.inner || []) {
+        if (child.kind === 'ObjCMethodDecl' && child.name) {
+          const methodInfo = {
+            name: child.name,
+            returnType: child.returnType?.qualType,
+            access: info.accessibility,
+          };
+          // Objective-C initializers are methods that start with 'init' (init, initWith..., etc.)
+          // but only if they return 'instancetype' or the class type (id in parsed form)
+          if (child.name === 'init' || child.name.startsWith('initWith')) {
+            members.initializers.push(methodInfo);
+          } else {
+            members.methods.push(methodInfo);
+          }
+        } else if (child.kind === 'ObjCPropertyDecl' && child.name) {
+          members.properties.push({
+            name: child.name,
+            type: child.type?.qualType,
+            access: info.accessibility,
+          });
+        }
+      }
+      memberData[name] = members;
+    }
+    
+    // Handle Objective-C protocols
+    if (kind === 'ObjCProtocolDecl' && name && !node.isImplicit) {
+      const info = {
+        name,
+        kind: 'source.lang.objc.decl.protocol',
+        file: filePath,
+        inheritedTypes: [],
+        accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
+        offset: node.loc?.offset,
+        length: calculateRangeLength(node.range),
+      };
+      
+      // Extract inherited protocols
+      if (node.protocols) {
+        for (const protocol of node.protocols) {
+          if (protocol.name) {
+            info.inheritedTypes.push(protocol.name);
+          }
+        }
+      }
+      
+      symbols.protocols.push(info);
+      
+      // Extract methods from protocol
+      const members = { properties: [], methods: [], initializers: [] };
+      for (const child of node.inner || []) {
+        if (child.kind === 'ObjCMethodDecl' && child.name) {
+          members.methods.push({
+            name: child.name,
+            returnType: child.returnType?.qualType,
+            access: info.accessibility,
+          });
+        } else if (child.kind === 'ObjCPropertyDecl' && child.name) {
+          members.properties.push({
+            name: child.name,
+            type: child.type?.qualType,
+            access: info.accessibility,
+          });
+        }
+      }
+      memberData[name] = members;
+    }
+    
+    // Handle Objective-C categories
+    if (kind === 'ObjCCategoryDecl' && name && !node.isImplicit) {
+      // Categories should always have an interface, but handle gracefully if missing
+      const interfaceName = node.interface?.name;
+      if (!interfaceName) {
+        // Skip categories without a valid interface as they're malformed
+        return;
+      }
+      
+      const categoryName = `${interfaceName}(${name})`;
+      const info = {
+        name: categoryName,
+        kind: 'source.lang.objc.decl.extension',
+        file: filePath,
+        inheritedTypes: [],
+        accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
+        offset: node.loc?.offset,
+        length: calculateRangeLength(node.range),
+        extendedType: interfaceName,
+      };
+      
+      // Extract protocols adopted by category
+      if (node.protocols) {
+        for (const protocol of node.protocols) {
+          if (protocol.name) {
+            info.inheritedTypes.push(protocol.name);
+          }
+        }
+      }
+      
+      symbols.extensions.push(info);
+    }
+    
+    // Recursively process children
+    for (const child of node.inner || []) {
+      walk(child);
+    }
+  }
+  
+  walk(ast);
+  return { symbols, memberData };
+}
+
 function getRelativePath(fullPath) {
   return repoPath ? fullPath.replace(repoPath + '/', '') : fullPath;
 }
@@ -212,7 +412,7 @@ server.registerTool(
   "init_swift_repo",
   {
     title: "Initialize Swift Repository",
-    description: "Scans a Swift/iOS project and generates AST using SourceKitten. Requires .xcodeproj or .xcworkspace. Run this first.",
+    description: "Scans a Swift/iOS project and generates AST using SourceKitten and Clang. Processes both Swift and Objective-C files. Requires .xcodeproj or .xcworkspace. Run this first.",
     inputSchema: {
       repoPath: z.string().describe("Absolute path to the Swift/iOS project folder."),
     },
@@ -239,39 +439,68 @@ Aborting analysis.` }] };
       
       // Check sourcekitten
       try {
-        await execAsync('which sourcekitten');
+        await execWithFile('which', ['sourcekitten']);
       } catch {
         return { content: [{ type: "text", text: `❌ SourceKitten not found. Install: brew install sourcekitten` }] };
       }
       
-      repoPath = inputPath;
-      const swiftFiles = await findSwiftFiles(repoPath);
+      // Check clang
+      let clangAvailable = true;
+      try {
+        await execWithFile('which', ['clang']);
+      } catch {
+        clangAvailable = false;
+      }
       
-      if (swiftFiles.length === 0) {
-        return { content: [{ type: "text", text: `❌ No Swift files found in iOS project.
+      repoPath = inputPath;
+      const sourceFiles = await findSourceFiles(repoPath);
+      
+      if (sourceFiles.swift.length === 0 && sourceFiles.objc.length === 0) {
+        return { content: [{ type: "text", text: `❌ No Swift or Objective-C files found in iOS project.
 
 Project: ${projectInfo.name} (${projectInfo.type})
 Path: ${projectInfo.path}
 
-The project exists but contains no .swift files.
+The project exists but contains no .swift, .m, or .h files.
 Aborting analysis.` }] };
       }
       
       // Generate AST for each file
       const files = {};
-      let processed = 0, errors = 0;
+      let swiftProcessed = 0, swiftErrors = 0;
+      let objcProcessed = 0, objcErrors = 0;
       
-      for (const file of swiftFiles) {
+      // Process Swift files
+      for (const file of sourceFiles.swift) {
         try {
-          const { stdout } = await execAsync(`sourcekitten structure --file "${file}"`);
+          const { stdout } = await execWithFile('sourcekitten', ['structure', '--file', file]);
           const ast = JSON.parse(stdout);
           const symbols = extractSymbols(ast, file);
           const memberData = extractMemberData(ast, symbols);
-          files[file] = { symbols, memberData };
-          processed++;
+          files[file] = { symbols, memberData, language: 'swift' };
+          swiftProcessed++;
         } catch {
-          errors++;
+          swiftErrors++;
         }
+      }
+      
+      // Process Objective-C files
+      if (clangAvailable && sourceFiles.objc.length > 0) {
+        for (const file of sourceFiles.objc) {
+          try {
+            // Use clang to generate AST, use -x objective-c to force Objective-C mode
+            const { stdout } = await execWithFile('clang', [...CLANG_AST_ARGS, file]);
+            const ast = JSON.parse(stdout);
+            const { symbols, memberData } = extractObjCSymbols(ast, file);
+            files[file] = { symbols, memberData, language: 'objc' };
+            objcProcessed++;
+          } catch (error) {
+            objcErrors++;
+          }
+        }
+      } else if (!clangAvailable && sourceFiles.objc.length > 0) {
+        // Clang not available, skip Objective-C files
+        objcErrors = sourceFiles.objc.length;
       }
       
       // Build type map
@@ -354,13 +583,27 @@ Aborting analysis.` }] };
         functions += f.symbols.functions.length;
       }
       
-      return { content: [{ type: "text", text: `✅ Initialized: ${repoPath}
+      let message = `✅ Initialized: ${repoPath}
 
-� Project: ${projectInfo.name} (${projectInfo.type})
-�📊 ${swiftFiles.length} files (${processed} OK, ${errors} errors)
-   Classes: ${classes} | Structs: ${structs} | Protocols: ${protocols} | Enums: ${enums} | Functions: ${functions}
+📱 Project: ${projectInfo.name} (${projectInfo.type})`;
+      
+      if (sourceFiles.swift.length > 0) {
+        message += `\n📊 Swift: ${sourceFiles.swift.length} files (${swiftProcessed} OK, ${swiftErrors} errors)`;
+      }
+      
+      if (sourceFiles.objc.length > 0) {
+        if (clangAvailable) {
+          message += `\n📊 Objective-C: ${sourceFiles.objc.length} files (${objcProcessed} OK, ${objcErrors} errors)`;
+        } else {
+          message += `\n⚠️  Objective-C: ${sourceFiles.objc.length} files skipped (Clang not available)`;
+        }
+      }
+      
+      message += `\n   Classes: ${classes} | Structs: ${structs} | Protocols: ${protocols} | Enums: ${enums} | Functions: ${functions}
    
-📄 Saved to: ${outputPath}` }] };
+📄 Saved to: ${outputPath}`;
+      
+      return { content: [{ type: "text", text: message }] };
     } catch (error) {
       return { content: [{ type: "text", text: `❌ Error: ${error.message}` }] };
     }

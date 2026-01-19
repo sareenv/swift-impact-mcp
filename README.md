@@ -4,14 +4,18 @@
 
 <img width="2796" height="2330" alt="image" src="https://github.com/user-attachments/assets/39b74732-3080-4c56-8093-b4fdd4eb77ab" />
 
-A lightweight MCP server for analyzing Swift/iOS codebases using SourceKitten AST parsing.
+A lightweight MCP server for analyzing Swift and Objective-C codebases using SourceKitten and Clang AST parsing.
 
 ## Quick Start
 
 ```bash
-# Install
+# Install dependencies
 npm install
-brew install sourcekitten
+brew install sourcekitten  # For Swift analysis
+
+# Clang is included with Xcode Command Line Tools
+# If not already installed:
+xcode-select --install
 
 # Run
 npm start
@@ -53,21 +57,44 @@ mkdir .vscode
 ## Example Usage
 
 ```
-# Start analysis
+# Start analysis (works with Swift-only, Objective-C-only, or mixed projects)
 Analyze the Swift project at /Users/me/MyApp
 
-# Understand code
+# Understand code (works for both Swift and Objective-C symbols)
 How does ContentView work?
 Explain the NetworkService class
+Explain the MyViewController class  # Even if it's Objective-C
 
 # Find code
 Find all controllers
-List all protocols
+List all protocols  # Includes both Swift and Objective-C protocols
 
 # Overview
-Show me the project statistics
+Show me the project statistics  # Shows counts for both languages
 What's in the Models folder?
 ```
+
+## Language Support
+
+### Supported Languages
+
+| Language | Parser | Features Extracted |
+|----------|--------|-------------------|
+| **Swift** | SourceKitten | Classes, Structs, Protocols, Enums, Functions, Extensions, Properties, Methods |
+| **Objective-C** | Clang | Classes, Protocols, Categories, Properties, Methods |
+
+### Cross-Language Analysis
+
+The tool automatically detects and analyzes both Swift and Objective-C files in mixed codebases:
+- **Inheritance tracking**: Swift classes inheriting from Objective-C classes
+- **Protocol conformance**: Both Swift and Objective-C protocol implementations
+- **Categories/Extensions**: Objective-C categories and Swift extensions on the same types
+- **Unified symbol lookup**: Search and explain symbols from both languages
+
+### Known Issues
+
+- **Clang crashes**: Some Objective-C protocol declarations may cause Clang v18.1.3 to crash during JSON AST generation. These files are gracefully skipped and counted as errors in the output.
+- **Foundation headers**: On non-macOS systems, Objective-C files that import Foundation headers may fail to parse if the headers are not available.
 
 ## Files
 
@@ -86,9 +113,9 @@ mcp-impact-analysis/
 
 ## How It Works
 
-1. `init_swift_repo` runs SourceKitten on each `.swift` file
-2. Extracts classes, structs, protocols, enums, functions
-3. Builds inheritance/conformance graph
+1. `init_swift_repo` runs SourceKitten on each `.swift` file and Clang on each `.m`/`.h` file
+2. Extracts classes, structs, protocols, enums, functions from both Swift and Objective-C code
+3. Builds inheritance/conformance graph across both languages
 4. Saves to `app.json`
 5. Other tools query the AST
 
@@ -107,18 +134,19 @@ mcp-impact-analysis/
 - **Speed** — AST is pre-generated, queries are instant
 - **AI-friendly** — Structured results for LLM consumption
 - **Cross-file awareness** — Understands inheritance, conformance, references
+- **Cross-language** — Analyzes both Swift and Objective-C in the same codebase
 - **No Xcode needed** — Works from terminal/VS Code via MCP
 
 ## Limitations
 
 | Limitation | Details |
 |------------|---------|
-| **Swift only** | Does not parse Objective-C (`.m`, `.h` files) |
 | **Static analysis** | No runtime behavior, just code structure |
 | **No semantic search** | Finds by name, not by "what code does" |
 | **No Interface Builder** | Doesn't parse `.xib`, `.storyboard`, or asset catalogs |
+| **Clang JSON bugs** | Some Objective-C constructs may cause Clang to crash (known bug in Clang 18.1.3 with protocol method mangling) - these files are skipped with errors counted |
 
-> **Note:** Mixed Swift/Objective-C projects will only have their Swift code analyzed. Objective-C classes, categories, and protocols will not appear in the AST.
+> **Note:** Mixed Swift/Objective-C projects are fully supported. Both Swift and Objective-C code will be analyzed and cross-language dependencies are tracked.
 
 ## Credits
 
