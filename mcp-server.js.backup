@@ -360,7 +360,7 @@ server.registerTool(
   "init_swift_repo",
   {
     title: "Initialize Swift Repository",
-    description: "Scans a Swift/iOS project and generates AST using SourceKitten and Clang. Processes both Swift and Objective-C files. Requires .xcodeproj or .xcworkspace. Run this first.",
+    description: "Scans a Swift/iOS project and generates AST using SourceKitten. Requires .xcodeproj or .xcworkspace. Run this first.",
     inputSchema: {
       repoPath: z.string().describe("Absolute path to the Swift/iOS project folder."),
     },
@@ -436,8 +436,8 @@ Aborting analysis.` }] };
       if (clangAvailable && sourceFiles.objc.length > 0) {
         for (const file of sourceFiles.objc) {
           try {
-            // Use clang to generate AST, suppress warnings to stderr, use -x objective-c to force Objective-C mode
-            const { stdout } = await execAsync(`clang -x objective-c -Xclang -ast-dump=json -fsyntax-only -fno-color-diagnostics "${file}" 2>/dev/null`);
+            // Use clang to generate AST, suppress warnings to stderr
+            const { stdout } = await execAsync(`clang -Xclang -ast-dump=json -fsyntax-only -fno-color-diagnostics "${file}" 2>/dev/null`);
             const ast = JSON.parse(stdout);
             const { symbols, memberData } = extractObjCSymbols(ast, file);
             files[file] = { symbols, memberData, language: 'objc' };
@@ -531,27 +531,13 @@ Aborting analysis.` }] };
         functions += f.symbols.functions.length;
       }
       
-      let message = `✅ Initialized: ${repoPath}
+      return { content: [{ type: "text", text: `✅ Initialized: ${repoPath}
 
-📱 Project: ${projectInfo.name} (${projectInfo.type})`;
-      
-      if (sourceFiles.swift.length > 0) {
-        message += `\n📊 Swift: ${sourceFiles.swift.length} files (${swiftProcessed} OK, ${swiftErrors} errors)`;
-      }
-      
-      if (sourceFiles.objc.length > 0) {
-        if (clangAvailable) {
-          message += `\n📊 Objective-C: ${sourceFiles.objc.length} files (${objcProcessed} OK, ${objcErrors} errors)`;
-        } else {
-          message += `\n⚠️  Objective-C: ${sourceFiles.objc.length} files skipped (Clang not available)`;
-        }
-      }
-      
-      message += `\n   Classes: ${classes} | Structs: ${structs} | Protocols: ${protocols} | Enums: ${enums} | Functions: ${functions}
+� Project: ${projectInfo.name} (${projectInfo.type})
+�📊 ${swiftFiles.length} files (${processed} OK, ${errors} errors)
+   Classes: ${classes} | Structs: ${structs} | Protocols: ${protocols} | Enums: ${enums} | Functions: ${functions}
    
-📄 Saved to: ${outputPath}`;
-      
-      return { content: [{ type: "text", text: message }] };
+📄 Saved to: ${outputPath}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `❌ Error: ${error.message}` }] };
     }
