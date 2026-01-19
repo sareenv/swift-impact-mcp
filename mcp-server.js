@@ -13,6 +13,14 @@ const execAsync = promisify(exec);
 const CLANG_NULL_POINTER = '0x0';  // Clang's JSON AST representation for null pointer
 const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics'];
 
+// Helper to safely calculate length from Clang AST range
+function calculateRangeLength(range) {
+  if (!range?.begin?.offset || !range?.end?.offset) {
+    return undefined;
+  }
+  return range.end.offset - range.begin.offset;
+}
+
 // Helper to safely execute commands with file paths
 async function execWithFile(command, args) {
   return new Promise((resolve, reject) => {
@@ -190,7 +198,7 @@ function extractObjCSymbols(ast, filePath) {
         inheritedTypes: [],
         accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
         offset: node.loc?.offset,
-        length: node.range?.end?.offset - node.range?.begin?.offset,
+        length: calculateRangeLength(node.range),
       };
       
       // Extract superclass
@@ -247,7 +255,7 @@ function extractObjCSymbols(ast, filePath) {
         inheritedTypes: [],
         accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
         offset: node.loc?.offset,
-        length: node.range?.end?.offset - node.range?.begin?.offset,
+        length: calculateRangeLength(node.range),
       };
       
       // Extract inherited protocols
@@ -291,7 +299,7 @@ function extractObjCSymbols(ast, filePath) {
         inheritedTypes: [],
         accessibility: filePath.endsWith('.h') ? 'public' : 'internal',
         offset: node.loc?.offset,
-        length: node.range?.end?.offset - node.range?.begin?.offset,
+        length: calculateRangeLength(node.range),
         extendedType: node.interface?.name,
       };
       
