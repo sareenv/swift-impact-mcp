@@ -3,15 +3,18 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import z from "zod";
 import fs from "fs/promises";
 import path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { spawn } from "child_process";
-
-const execAsync = promisify(exec);
 
 // Constants for Clang AST generation
 const CLANG_NULL_POINTER = '0x0';  // Clang's JSON AST representation for null pointer
 const CLANG_AST_ARGS = ['-x', 'objective-c', '-Xclang', '-ast-dump=json', '-fsyntax-only', '-fno-color-diagnostics'];
+
+// Display limits for output formatting
+const MAX_DISPLAY_PROPERTIES = 10;
+const MAX_DISPLAY_METHODS = 10;
+const MAX_DISPLAY_FILES = 5;
+const MAX_SEARCH_RESULTS = 25;
+const PROGRESS_UPDATE_INTERVAL = 10;  // Log progress every N files
 
 // Helper to safely calculate length from Clang AST range
 function calculateRangeLength(range) {
@@ -469,25 +472,43 @@ Aborting analysis.` }] };
       const files = {};
       let swiftProcessed = 0, swiftErrors = 0;
       let objcProcessed = 0, objcErrors = 0;
+      const errorDetails = [];
       
       // Process Swift files
-      for (const file of sourceFiles.swift) {
+      for (let i = 0; i < sourceFiles.swift.length; i++) {
+        const file = sourceFiles.swift[i];
         try {
+          // Log progress periodically
+          if (i > 0 && i % PROGRESS_UPDATE_INTERVAL === 0) {
+            console.error(`[Progress] Swift: ${i}/${sourceFiles.swift.length} files processed`);
+          }
+          
           const { stdout } = await execWithFile('sourcekitten', ['structure', '--file', file]);
           const ast = JSON.parse(stdout);
           const symbols = extractSymbols(ast, file);
           const memberData = extractMemberData(ast, symbols);
           files[file] = { symbols, memberData, language: 'swift' };
           swiftProcessed++;
-        } catch {
+        } catch (error) {
           swiftErrors++;
+          errorDetails.push({ 
+            file: getRelativePath(file), 
+            language: 'swift',
+            error: error.message 
+          });
         }
       }
       
       // Process Objective-C files
       if (clangAvailable && sourceFiles.objc.length > 0) {
-        for (const file of sourceFiles.objc) {
+        for (let i = 0; i < sourceFiles.objc.length; i++) {
+          const file = sourceFiles.objc[i];
           try {
+            // Log progress periodically
+            if (i > 0 && i % PROGRESS_UPDATE_INTERVAL === 0) {
+              console.error(`[Progress] Objective-C: ${i}/${sourceFiles.objc.length} files processed`);
+            }
+            
             // Use clang to generate AST, use -x objective-c to force Objective-C mode
             const { stdout } = await execWithFile('clang', [...CLANG_AST_ARGS, file]);
             const ast = JSON.parse(stdout);
@@ -496,6 +517,11 @@ Aborting analysis.` }] };
             objcProcessed++;
           } catch (error) {
             objcErrors++;
+            errorDetails.push({ 
+              file: getRelativePath(file), 
+              language: 'objc',
+              error: error.message 
+            });
           }
         }
       } else if (!clangAvailable && sourceFiles.objc.length > 0) {
@@ -602,6 +628,18 @@ Aborting analysis.` }] };
       message += `\n   Classes: ${classes} | Structs: ${structs} | Protocols: ${protocols} | Enums: ${enums} | Functions: ${functions}
    
 📄 Saved to: ${outputPath}`;
+
+      // Add error details if any errors occurred
+      if (errorDetails.length > 0) {
+        message += `\n\n⚠️  Errors encountered:\n`;
+        const displayErrors = errorDetails.slice(0, MAX_DISPLAY_FILES);
+        for (const err of displayErrors) {
+          message += `   [${err.language}] ${err.file}\n      → ${err.error.split('\n')[0]}\n`;
+        }
+        if (errorDetails.length > MAX_DISPLAY_FILES) {
+          message += `   ... +${errorDetails.length - MAX_DISPLAY_FILES} more errors\n`;
+        }
+      }
       
       return { content: [{ type: "text", text: message }] };
     } catch (error) {
@@ -719,10 +757,10 @@ server.registerTool(
     
     if (members.properties.length > 0) {
       r += `\n📝 Properties (${members.properties.length}):\n`;
-      for (const p of members.properties.slice(0, 10)) {
+      for (const p of members.properties.slice(0, MAX_DISPLAY_PROPERTIES)) {
         r += `   • ${p.name}${p.type ? `: ${p.type}` : ''}${p.access && p.access !== 'internal' ? ` [${p.access}]` : ''}\n`;
       }
-      if (members.properties.length > 10) r += `   ... +${members.properties.length - 10} more\n`;
+      if (members.properties.length > MAX_DISPLAY_PROPERTIES) r += `   ... +${members.properties.length - MAX_DISPLAY_PROPERTIES} more\n`;
     }
     
     if (members.initializers.length > 0) {
@@ -734,10 +772,10 @@ server.registerTool(
     
     if (members.methods.length > 0) {
       r += `\n⚡ Methods (${members.methods.length}):\n`;
-      for (const m of members.methods.slice(0, 10)) {
+      for (const m of members.methods.slice(0, MAX_DISPLAY_METHODS)) {
         r += `   • ${m.name}${m.returnType ? ` → ${m.returnType}` : ''}${m.access && m.access !== 'internal' ? ` [${m.access}]` : ''}\n`;
       }
-      if (members.methods.length > 10) r += `   ... +${members.methods.length - 10} more\n`;
+      if (members.methods.length > MAX_DISPLAY_METHODS) r += `   ... +${members.methods.length - MAX_DISPLAY_METHODS} more\n`;
     }
     
     r += `\n🔗 Usage:\n`;
@@ -748,7 +786,7 @@ server.registerTool(
       r += `   Extended in: ${extensions.map(x => x.file).join(', ')}\n`;
     }
     if (referencedIn.length > 0) {
-      r += `   Referenced in: ${referencedIn.slice(0, 5).join(', ')}${referencedIn.length > 5 ? ` +${referencedIn.length - 5} more` : ''}\n`;
+      r += `   Referenced in: ${referencedIn.slice(0, MAX_DISPLAY_FILES).join(', ')}${referencedIn.length > MAX_DISPLAY_FILES ? ` +${referencedIn.length - MAX_DISPLAY_FILES} more` : ''}\n`;
     }
     if (inheritedBy.length === 0 && extensions.length === 0 && referencedIn.length === 0) {
       r += `   ⚠️ No usages found (may be entry point or use composition)\n`;
@@ -800,12 +838,12 @@ server.registerTool(
     }
     
     let r = `🔍 Found ${results.length} results for "${query}"\n\n`;
-    for (const item of results.slice(0, 25)) {
+    for (const item of results.slice(0, MAX_SEARCH_RESULTS)) {
       r += `• ${item.name} (${item.kind})`;
       if (item.inherited?.length > 0) r += ` : ${item.inherited.join(', ')}`;
       r += `\n  └─ ${item.file}\n`;
     }
-    if (results.length > 25) r += `\n... +${results.length - 25} more`;
+    if (results.length > MAX_SEARCH_RESULTS) r += `\n... +${results.length - MAX_SEARCH_RESULTS} more`;
     
     return { content: [{ type: "text", text: r }] };
   }
@@ -857,7 +895,7 @@ server.registerTool(
     r += `   Extensions: ${extensions}\n`;
     r += `   Functions:  ${functions}\n\n`;
     r += `📄 Largest files:\n`;
-    for (const f of fileSizes.slice(0, 5)) {
+    for (const f of fileSizes.slice(0, MAX_DISPLAY_FILES)) {
       r += `   ${f.count.toString().padStart(3)} symbols → ${f.file}\n`;
     }
     
@@ -909,13 +947,13 @@ server.registerTool(
     for (const sec of sections) {
       if (sec.items?.length > 0) {
         r += `${sec.name} (${sec.items.length}):\n`;
-        for (const item of sec.items.slice(0, 10)) {
+        for (const item of sec.items.slice(0, MAX_DISPLAY_METHODS)) {
           r += `  • ${item.name}`;
           if (item.inheritedTypes?.length > 0) r += ` : ${item.inheritedTypes.join(', ')}`;
           if (item.typeName) r += ` → ${item.typeName}`;
           r += '\n';
         }
-        if (sec.items.length > 10) r += `  ... +${sec.items.length - 10} more\n`;
+        if (sec.items.length > MAX_DISPLAY_METHODS) r += `  ... +${sec.items.length - MAX_DISPLAY_METHODS} more\n`;
         r += '\n';
       }
     }
